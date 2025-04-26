@@ -3,7 +3,7 @@
 ![image](https://img.shields.io/badge/C-00599C?style=for-the-badge&logo=c&logoColor=white)  ![image](https://img.shields.io/badge/Raspberry%20Pi-A22846?style=for-the-badge&logo=Raspberry%20Pi&logoColor=white)  ![image](https://img.shields.io/badge/Arduino_IDE-00979D?style=for-the-badge&logo=arduino&logoColor=white)  
 
 ## Description
-This project implements various control algorithms to check their fault tolerance(for one actuator fault/failure). 
+This project implements various control algorithms on a quadcopter to check their fault tolerance(for one actuator fault/failure). 
 The code is written in C using the Arduino framework and freeRTOS. 
 You can clone this repository and upload the firmware to your microcontroller to build your own quadcopter.
 
