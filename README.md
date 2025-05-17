@@ -22,3 +22,6 @@ You can clone this repository and upload the firmware to your microcontroller to
 3. Follow the calibration steps and place the quadcopter on a table for a few seconds for the tare process
 4. Check the IMU readings(firmware from Adafruit_BNO08x examples) for confirmation
 5. Upload the [Tuning firmware](PID_TUNING.ino)
+6. Check for the server's IP address in the serial monitor
+7. Modify the IP address int the [Python Client](hB2_Latest_UI.py)
+8. Send the commands from the Client appropirately
