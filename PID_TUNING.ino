@@ -5,24 +5,26 @@
 #include <task.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <math.h>
 
 // --- WIFI DEFS ---
 #ifndef STASSID
-#define STASSID                                     "Mi 11X"
-#define STAPSK                                      "12345678"
-#define WIFI_PORT                                   80
+#define STASSID "Pixl"
+#define STAPSK "12345678"
+#define WIFI_PORT 5000
 #endif
 
 // --- Constants and Globals ---
 #define BNO08X_RESET -1
-sh2_SensorId_t reportType = SH2_GYRO_INTEGRATED_RV;
+sh2_SensorId_t reportType1 = SH2_GYRO_INTEGRATED_RV;
+sh2_SensorId_t reportType2 = SH2_GYROSCOPE_CALIBRATED;
 long reportIntervalUs = 2500;
 
 Adafruit_BNO08x bno08x(BNO08X_RESET);
 sh2_SensorValue_t sensorValue;
 
 Servo motor[4];
-int motorPins[4] = {10, 11, 12, 13};  // 10 -- FR(CW); 11 -- FL(CCW); 12 -- RL(CW); 13 -- RR(CCW) 
+int motorPins[4] = { 10, 11, 12, 13 };  // 10 -- FL(CCW); 11 -- RL(CW); 12 -- FR(CW); 13 -- RR(CCW)
 
 struct euler_t {
   float yaw;
@@ -30,8 +32,16 @@ struct euler_t {
   float roll;
 } ypr;
 
-float Kproll = 2.8e-5;
-float Kppitch = 1.1e-4;
+struct gyroscope_t {
+  float x;
+  float y;
+  float z;
+} gyro;
+
+float Kproll = 0.5;
+float Kdroll = 0.1;
+float Kppitch = 0.5;
+float Kdpitch = 0.1;
 
 volatile bool controlEnabled = false;
 
@@ -43,12 +53,12 @@ WiFiClient client;
 
 // --- Command enums ---
 enum control {
-  START = 0,          // msg length = 0B           - Enable control loop
-  KILL,               // msg length = 0B           - Emergency stop
-  HOVER,              // msg length = 0B           - Level hover mode (pitch = roll = 0)
-  SET_KP_ROLL,        // msg length = 4B (float)   - Set Kp for roll
-  SET_KP_PITCH,       // msg length = 4B (float)   - Set Kp for pitch
-  CMD_SIZE            //                           - Total command count
+  START = 0,     // msg length = 0B           - Enable control loop
+  KILL,          // msg length = 0B           - Emergency stop
+  HOVER,         // msg length = 0B           - Level hover mode (pitch = roll = 0)
+  SET_KP_ROLL,   // msg length = 4B (float)   - Set Kp for roll
+  SET_KP_PITCH,  // msg length = 4B (float)   - Set Kp for pitch
+  CMD_SIZE       //                           - Total command count
 };
 
 TaskHandle_t controlTaskHandle = NULL;
@@ -59,37 +69,39 @@ TaskHandle_t controlTaskHandle = NULL;
 // void updateAttitude();
 // void mixMotors();
 // void quaternionToEuler(float qr, float qi, float qj, float qk, euler_t* ypr, bool degrees = false);
+// void quaternionToEulerGameRV(sh2_GameRotationVector_t* rotational_vector, euler_t* ypr, bool degrees = false);
 // void setReports(sh2_SensorId_t reportType, long report_interval);
 
 // --- Setup ---
 void setup() {
   Serial.begin(115200);
+  Serial.println("Starting");
   delay(10000);
   initWiFi();
   delay(3000);
   initIMU();
   startTime = millis();
 
-  xTaskCreate(vSensorTask, 
-            "SensorTask", 
-            1024, 
-            NULL, 
-            2,
-            NULL);
+  xTaskCreate(vSensorTask,
+              "SensorTask",
+              1024,
+              NULL,
+              2,
+              NULL);
 
   xTaskCreate(vNetTask,
-            "NetTask",
-            1024, 
-            NULL, 
-            1, 
-            NULL);
+              "NetTask",
+              1024,
+              NULL,
+              2,
+              NULL);
 
-  xTaskCreate(vControlTask, 
-            "ControlTask", 
-            1024, 
-            NULL, 
-            1, 
-            &controlTaskHandle);  // Pass the handle
+  xTaskCreate(vControlTask,
+              "ControlTask",
+              1024,
+              NULL,
+              3,
+              &controlTaskHandle);  // Pass the handle
 }
 
 // --- Main Loop ---
@@ -105,8 +117,7 @@ void initMotors() {
 }
 
 // --- WiFi Initialization ---
-void initWiFi()
-{
+void initWiFi() {
   WiFi.begin(STASSID, STAPSK);
   while (WiFi.status() != WL_CONNECTED) {
     Serial.print('.');
@@ -123,10 +134,12 @@ void initWiFi()
 void initIMU() {
   if (!bno08x.begin_I2C()) {
     Serial.println("Failed to find BNO08x");
-    while (1);
+    while (1)
+      ;
   }
   Serial.println("BNO08x Found!");
-  setReports(reportType, reportIntervalUs);
+  setReports(reportType1, reportIntervalUs);
+  setReports(reportType2, reportIntervalUs);
   delay(100);
 }
 
@@ -141,21 +154,23 @@ void quaternionToEulerGI(sh2_GyroIntegratedRV_t* rotational_vector, euler_t* ypr
     quaternionToEuler(rotational_vector->real, rotational_vector->i, rotational_vector->j, rotational_vector->k, ypr, degrees);
 }
 
+
 // --- Attitude Update ---
 void updateAttitude() {
   if (bno08x.wasReset()) {
-    setReports(reportType, reportIntervalUs);
+    setReports(reportType1, reportIntervalUs);
+    setReports(reportType2, reportIntervalUs);
   }
 
   if (bno08x.getSensorEvent(&sensorValue)) {
-    if (sensorValue.sensorId == SH2_GYRO_INTEGRATED_RV) {
-      quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);
-      // Serial.print("YPR: ");
-      // Serial.print(ypr.yaw); Serial.print("\t");
-      // Serial.print(ypr.pitch); Serial.print("\t");
-      // Serial.println(ypr.roll);
+    if (sensorValue.sensorId == SH2_GAME_ROTATION_VECTOR) {
+      quaternionToEulerGI(&sensorValue.un.gyroIntegratedRV, &ypr, true);}
+    else if (sensorValue.sensorId == SH2_GYROSCOPE_CALIBRATED) {
+        gyro.x = sensorValue.un.gyroscope.x;
+        gyro.y = sensorValue.un.gyroscope.y;
+        gyro.z = sensorValue.un.gyroscope.z;
+      }
     }
-  }
 }
 
 // --- Motor Mixing with P Controller for Roll & Pitch ---
@@ -166,18 +181,21 @@ void mixMotors() {
   float rollError = desiredRoll - ypr.roll;
   float pitchError = desiredPitch - ypr.pitch;
 
-  float rollCorrection = Kproll * rollError;
-  float pitchCorrection = Kppitch * pitchError;
+  float rollRateError = -gyro.x * RAD_TO_DEG;
+  float pitchRateError = -gyro.y * RAD_TO_DEG;
 
-  int hoverPWM = 1550;
+  float rollCorrection = Kproll * rollError + Kdroll * rollRateError;
+  float pitchCorrection = Kppitch * pitchError + Kdpitch * pitchRateError;
+
+  int hoverPWM = 1100;
 
   int motorPWMs[4];
 
   // Motor mixing for quad in 'X' config
-  motorPWMs[0] = hoverPWM + pitchCorrection - rollCorrection;  
-  motorPWMs[1] = hoverPWM + pitchCorrection + rollCorrection;  
-  motorPWMs[2] = hoverPWM - pitchCorrection + rollCorrection;  
-  motorPWMs[3] = hoverPWM - pitchCorrection - rollCorrection;
+  motorPWMs[0] = hoverPWM + pitchCorrection - rollCorrection;
+  motorPWMs[1] = hoverPWM - pitchCorrection - rollCorrection;
+  motorPWMs[2] = hoverPWM + pitchCorrection + rollCorrection;
+  motorPWMs[3] = hoverPWM - pitchCorrection + rollCorrection;
 
   // Constrain and write to motors
   for (int i = 0; i < 4; i++) {
@@ -213,25 +231,24 @@ void vSensorTask(void* pvParameters) {
 }
 
 void vControlTask(void* pvParameters) {
-  const TickType_t xFrequency = pdMS_TO_TICKS(2.5); // 400 Hz
+  const TickType_t xFrequency = pdMS_TO_TICKS(2.5);
   TickType_t xLastWakeTime = xTaskGetTickCount();
 
   for (;;) {
     if (!controlEnabled) {
       for (int i = 0; i < 4; i++) {
-        motor[i].writeMicroseconds(1000); // Kill motors
+        motor[i].writeMicroseconds(1000);
       }
-      vTaskSuspend(NULL); // Stop this task
-    }
-    else{
+      vTaskDelay(xFrequency);  // Keep task alive but idle
+    } else {
       mixMotors();
+      vTaskDelayUntil(&xLastWakeTime, xFrequency);
     }
-    vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
 void vNetTask(void* pvParameters) {
-  char incomingPacket[256];
+  char incomingPacket[512];
   for (;;) {
     int packetSize = udp.parsePacket();
     if (packetSize) {
@@ -253,7 +270,7 @@ void vNetTask(void* pvParameters) {
 
         case HOVER:
           controlEnabled = true;
-          if(controlTaskHandle != NULL){
+          if (controlTaskHandle != NULL) {
             vTaskResume(controlTaskHandle);
           }
           Serial.println("HOVER command received.");
